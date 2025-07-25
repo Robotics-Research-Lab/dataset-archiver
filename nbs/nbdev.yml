@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "dataset-archiver"
+  site-url: "https://Robotics-Research-Lab.github.io/dataset-archiver"
+  description: "Upload dataset folder to WebDAV and attach metadata."
+  repo-branch: main
+  repo-url: "https://github.com/Robotics-Research-Lab/dataset-archiver"
