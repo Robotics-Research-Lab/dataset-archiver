@@ -18,16 +18,16 @@ Embeds clear usage restrictions (non-commercial, permission-required)
 
 ## Features
 
-- ✅ Uploads entire folders to WebDAV
-- ✅ Appends a date + hash to create unique, immutable archive folders
-- ✅ Automatically generates:
+- Uploads entire folders to WebDAV
+- Appends a date + hash to create unique, immutable archive folders
+- Automatically generates:
   - `metadata.json`
   - `manifest.csv` (file list)
   - `LICENSE.txt` (non-commercial, permission-based)
   - `README.txt` (human-readable)
-- ✅ Skips or warns on conflicts
-- ✅ Supports dry runs
-- ✅ CLI or notebook use
+- Skips or warns on conflicts
+- Supports dry runs
+- CLI or notebook use
 
 ## Usage example
 
@@ -36,7 +36,7 @@ from dataset_archiver.core import upload_dataset_to_webdav
 
 upload_dataset_to_webdav(
     source_folder="/path/to/my_dataset",
-    base_webdav_url="https://u-drive.unipi.it/remote.php/webdav/RRL/archival_data",
+    base_webdav_url="webdav/RRL/archival_data",
     label="2025_exp01",
     metadata={
         "title": "Underwater anomaly scan",
@@ -45,9 +45,27 @@ upload_dataset_to_webdav(
         "description": "Raw magnetometer + IMU logs with sonar overlay",
         "responsible": "Andrea Munafo"
     },
-    username="a012197",
+    username="username",
     contact_email="andrea.name@unipi.it"
 )
+```
+
+or via CLI:
+
+``` python
+upload-dataset \
+  --source ./DATASET \
+  --label 2024_DATASET \
+  --title "Magnetic Surveys" \
+  --source_name "Synthetic" \
+  --date_collected "2024-11-05--2024-11-08" \
+  --description "Magnetic data collected in some place in the World." \
+  --responsible "Andrea Munafo" \
+  --username username \
+  --email andrea.munafo@unipi.it \
+  --webdav https://webdav/RRL/archival_data
+  --dry-run
+```
 
 Requires a valid WebDAV login (password securely prompted).
 
@@ -61,7 +79,7 @@ This repo uses [nbdev](https://nbdev.fast.ai) to manage:
 
 ### Install dataset_archiver in Development mode
 
-```sh
+``` sh
 # make sure dataset_archiver package is installed in development mode
 $ pip install -e .
 
