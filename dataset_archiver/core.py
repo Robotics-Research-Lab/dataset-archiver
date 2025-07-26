@@ -4,7 +4,8 @@
 
 # %% auto 0
 __all__ = ['hash_folder', 'generate_manifest', 'write_standard_license', 'write_restricted_license', 'write_readme',
-           'upload_file_to_webdav', 'log_upload_to_registry', 'upload_dataset_to_webdav']
+           'upload_file_to_webdav', 'log_upload_to_registry', 'upload_dataset_to_webdav',
+           'upload_registry_to_webdav_USEFUL', 'verify_uploaded_dataset', 'sync_upload_registry', 'archive_dataset']
 
 # %% ../nbs/00_core.ipynb 3
 import os
@@ -18,6 +19,7 @@ from requests.auth import HTTPBasicAuth
 from getpass import getpass
 from time import time
 
+# %% ../nbs/00_core.ipynb 4
 def hash_folder(folder_path):    
     "Return a short MD5 hash representing the contents of a folder, based on its files."
     h = hashlib.md5()
@@ -183,7 +185,8 @@ def upload_dataset_to_webdav(
     username: str,
     contact_email: str,
     license_type: str = "restricted",
-    dry_run: bool = False
+    dry_run: bool = False,
+    auth=None
 ) -> str:
     """
     Upload an entire dataset folder to a WebDAV server, creating a dated and hashed archive folder.
@@ -201,8 +204,9 @@ def upload_dataset_to_webdav(
     if not any(Path(source_folder).rglob("*.*")):
         raise ValueError(f"Source folder '{source_folder}' contains no files.")
 
-    password = getpass(f"Password for {username}: ")
-    auth = HTTPBasicAuth(username, password)
+    if auth is None:
+        password = getpass(f"Password for {username}: ")        
+        auth = HTTPBasicAuth(username, password)
     
     version_hash = hash_folder(source_folder)
     date_str = datetime.today().strftime("%Y%m%d")
@@ -318,4 +322,298 @@ def upload_dataset_to_webdav(
     )
     
     return remote_folder_url
+
+# %% ../nbs/00_core.ipynb 5
+def upload_registry_to_webdav_USEFUL(
+    local_registry_path: str,
+    remote_registry_path: str,
+    auth: HTTPBasicAuth
+):
+    "Upload the local registry CSV to a known shared WebDAV location."
+    if not os.path.exists(local_registry_path):
+        print(f"⚠️ Registry not found at {local_registry_path}")
+        return
+    with open(local_registry_path, "rb") as f:
+        res = requests.put(remote_registry_path, data=f, auth=auth)
+    if res.status_code in [200, 201, 204]:
+        print(f"📤 Uploaded registry to {remote_registry_path}")
+    else:
+        print(f"❌ Failed to upload registry: HTTP {res.status_code}")
+
+# %% ../nbs/00_core.ipynb 7
+from getpass import getpass
+import os, json, hashlib, requests
+from datetime import datetime
+import pandas as pd
+from pathlib import Path
+from requests.auth import HTTPBasicAuth
+from time import time
+from xml.etree import ElementTree as ET
+import csv
+
+# %% ../nbs/00_core.ipynb 8
+def verify_uploaded_dataset(
+    source_folder: str,
+    remote_folder_url: str,
+    auth: HTTPBasicAuth,
+    metadata: dict,
+    base_folder: Path = None,
+    strict: bool = False
+):
+    """
+    Compare the local dataset folder with its remote WebDAV version.
+    Prints a summary of matches, mismatches, and missing files.
+    Optionally raises an error if strict mode is enabled and mismatches are found.
+
+    Parameters
+    ----------
+    source_folder : str
+        Local folder that was uploaded.
+    remote_folder_url : str
+        Base WebDAV URL where the dataset was uploaded.
+    auth : HTTPBasicAuth
+        Authentication object for WebDAV.
+    metadata : dict
+        Metadata dictionary containing dataset info.
+    base_folder : Path
+        Optional: base folder path for resolving relative paths.
+    strict : bool
+        If True, raise AssertionError if any files are missing or unexpected.
+    """
+    from urllib.parse import unquote
+    from xml.etree import ElementTree as ET
+
+    if base_folder is None:
+        base_folder = Path(source_folder)
+
+    def is_not_hidden(path: Path, base_folder: Path):
+        try:
+            parts = path.relative_to(base_folder).parts
+            return all(not p.startswith(".") for p in parts)
+        except ValueError:
+            return False
+
+    local_files = {
+        str(p.relative_to(base_folder)).replace("\\", "/"): p
+        for p in Path(source_folder).rglob("*")
+        if p.is_file() and is_not_hidden(p, base_folder)
+    }
+
+    print(f"🔍 Verifying {len(local_files)} local files against remote at:")
+    print(f"{remote_folder_url}\n")
+
+    headers = {"Depth": "infinity"}
+    r = requests.request("PROPFIND", remote_folder_url, auth=auth, headers=headers)
+    if r.status_code != 207:
+        print(f"❌ Failed to list remote folder contents: HTTP {r.status_code}")
+        return
+
+    tree = ET.fromstring(r.content)
+    remote_files = set()
+    for resp in tree.findall("{DAV:}response"):
+        href = resp.find("{DAV:}href")
+        if href is not None:
+            path = href.text
+            if path.endswith("/"):
+                continue
+            full_prefix = Path(remote_folder_url).parts[-1]
+            if full_prefix in path:
+                rel_path = path.split(full_prefix, 1)[-1]
+                rel_path = rel_path.lstrip("/")
+                rel_path = unquote(rel_path).replace("\\", "/")
+                remote_files.add(rel_path)
+
+    added_files = {"manifest.csv", "metadata.json", "LICENSE.txt", "README.txt"}
+    matched_files = set(local_files.keys()) & remote_files
+    missing_files = set(local_files.keys()) - remote_files
+    extra_files = remote_files - set(local_files.keys()) - added_files
+
+    print(f"✅ Matched files   : {len(matched_files)}")
+    print(f"❌ Missing uploads : {len(missing_files)}")
+    print(f"⚠️  Unexpected files on server : {len(extra_files)}")
+
+    if missing_files:
+        print("\nMissing:")
+        for f in sorted(missing_files):
+            print(f" - {f}")
+
+    if extra_files:
+        print("\nExtra:")
+        for f in sorted(extra_files):
+            print(f" - {f}")
+
+    if strict and (missing_files or extra_files):
+        raise AssertionError("❌ Strict verification failed: mismatches detected.")
+
+    print("\n📦 Verification complete.")
+    return {
+        "matched": matched_files,
+        "missing": missing_files,
+        "extra": extra_files
+    }
+
+
+# %% ../nbs/00_core.ipynb 9
+def sync_upload_registry(
+    local_registry_path: str,
+    remote_registry_url: str,
+    auth: HTTPBasicAuth,
+    merged_local_backup_path: str = "upload_registry_merged.csv"
+):
+    """
+    Safely merge local and remote upload registries, deduplicate, save locally, and upload back to WebDAV.
+    Ensures that the _registry folder is created before upload.
+
+    Parameters
+    ----------
+    local_registry_path : str
+        Path to the local registry CSV file.
+    remote_registry_url : str
+        URL of the remote registry CSV on WebDAV.
+    auth : HTTPBasicAuth
+        Authentication object for WebDAV access.
+    merged_local_backup_path : str
+        Path to save the merged registry locally before uploading.
+    """
+    import io
+    from urllib.parse import urlparse, urlunparse
+
+    if not os.path.exists(local_registry_path):
+        print(f"⚠️ Local registry does not exist: {local_registry_path}. You should download it first from the server or run `upload_dataset_to_webdav` to upload a new dataset.")
+        return
+
+    local_df = pd.read_csv(local_registry_path)
+
+    # Try to download remote registry
+    r = requests.get(remote_registry_url, auth=auth)
+    if r.status_code == 200:
+        remote_df = pd.read_csv(io.StringIO(r.text))
+        print(f"🔄 Remote registry downloaded: {len(remote_df)} entries")
+    elif r.status_code == 404:
+        print("📄 Remote registry not found — creating new one.")
+        remote_df = pd.DataFrame(columns=local_df.columns)
+    else:
+        print(f"❌ Failed to fetch remote registry: HTTP {r.status_code}")
+        return
+
+    # Merge and deduplicate
+    if not remote_df.empty:
+        remote_df = remote_df[[col for col in remote_df.columns if col in local_df.columns]]
+    merged_df = pd.concat([local_df, remote_df], ignore_index=True)
+    merged_df.drop_duplicates(subset=["hash", "label"], keep="last", inplace=True)
+
+    # Save merged registry locally
+    merged_df.to_csv(merged_local_backup_path, index=False)
+    print(f"💾 Merged registry saved locally at: {merged_local_backup_path}")
+
+    # Ensure _registry/ folder exists using robust URL parsing
+    parsed = urlparse(remote_registry_url)
+    registry_folder_path = str(Path(parsed.path).parent)
+    registry_folder_url = urlunparse((parsed.scheme, parsed.netloc, registry_folder_path, "", "", ""))
+
+    r_mkcol = requests.request("MKCOL", registry_folder_url, auth=auth)
+    if r_mkcol.status_code not in [200, 201, 405]:
+        print(f"❌ Failed to create _registry folder: HTTP {r_mkcol.status_code}")
+        return
+
+    # Upload the merged registry
+    with open(merged_local_backup_path, "rb") as f:
+        res = requests.put(remote_registry_url, data=f, auth=auth)
+
+    if res.status_code in [200, 201, 204]:
+        print(f"✅ Merged registry uploaded to: {remote_registry_url}")
+    else:
+        print(f"❌ Failed to upload merged registry: HTTP {res.status_code}")
+
+
+
+# %% ../nbs/00_core.ipynb 11
+def archive_dataset(
+    source_folder: str,
+    base_webdav_url: str,
+    label: str,
+    metadata: dict,
+    username: str,
+    contact_email: str,
+    registry_path: str = "upload_registry.csv",
+    remote_registry_url: str = None,
+    merged_local_backup_path: str = "upload_registry_merged.csv",
+    verify: bool = True,
+    strict: bool = False,
+    sync_registry: bool = True,
+    dry_run: bool = False
+) -> str:
+    """
+    Archive a dataset by uploading to WebDAV, verifying upload, and syncing registry.
+
+    Parameters
+    ----------
+    source_folder : str
+        Path to the dataset folder.
+    base_webdav_url : str
+        WebDAV base URL.
+    label : str
+        Dataset label (used for folder naming).
+    metadata : dict
+        Metadata describing the dataset.
+    username : str
+        WebDAV login username.
+    contact_email : str
+        Responsible person's contact email.
+    registry_path : str
+        Path to the local CSV registry.
+    remote_registry_url : str
+        WebDAV URL of the remote registry CSV.
+    merged_local_backup_path : str
+        Local path to store the merged registry.
+    verify : bool
+        Whether to verify the upload.
+    strict : bool
+        Whether to raise an error if verification fails.
+    sync_registry : bool
+        Whether to sync the registry to WebDAV.
+    dry_run : bool
+        If True, only print actions without uploading.
+
+    Returns
+    -------
+    str
+        URL of the remote dataset folder.
+    """
+    from requests.auth import HTTPBasicAuth
+
+    print("🔐 Requesting credentials...")
+    password = getpass(f"Password for {username}: ")
+    auth = HTTPBasicAuth(username, password)
+    
+    remote_url = upload_dataset_to_webdav(
+        source_folder=source_folder,
+        base_webdav_url=base_webdav_url,
+        label=label,
+        metadata=metadata,
+        username=username,
+        contact_email=contact_email,
+        dry_run=dry_run,
+        auth=auth
+    )
+
+    print('here')
+    if verify and not dry_run:
+        verify_uploaded_dataset(
+            source_folder=source_folder,
+            remote_folder_url=remote_url,
+            auth=auth,
+            metadata=metadata,
+            strict=strict
+        )
+
+    if sync_registry and not dry_run and remote_registry_url:
+        sync_upload_registry(
+            local_registry_path=registry_path,
+            remote_registry_url=remote_registry_url,
+            auth=auth,
+            merged_local_backup_path=merged_local_backup_path
+        )
+
+    return remote_url
 
